@@ -1,0 +1,142 @@
+package org.example.highPerformanceSpark
+
+import javolution.testing.TestContext.assertTrue
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.Row
+import org.apache.spark.streaming.StreamingContext
+import org.apache.spark.streaming.dstream.InputDStream
+
+import scala.collection.mutable
+import scala.reflect.ClassTag
+
+object chapter8 {
+  /**
+   * Testing & Validation
+   */
+
+
+  /**
+   * Factoring code for testability
+   * These two functions are very easy to test
+   */
+  def tokenizeRDD(input: RDD[String]): RDD[String] = {
+    input.flatMap(tokenize)
+  }
+
+  def tokenize(input: String): Array[String] = {
+    input.split(" ")
+  }
+
+  /**
+   * Very hard to test inner-function
+   */
+  def difficultTokenizeRDD(input: RDD[String]): RDD[String] = {
+    input.flatMap(_.split(" "))
+  }
+
+  def makeSimpleQueueStream(ssc: StreamingContext, sc: SparkContext): InputDStream[String] = {
+    val input = List(List("hi"), List("happy pandas", "sad pandas"))
+      .map(sc.parallelize(_))
+    val idstream = ssc.queueStream(mutable.Queue(input:_*))
+    idstream
+  }
+
+  /**
+   * Computing RDD difference
+   * Bringing data back locally works really well if your test data is small enough to collect back to a local machine.
+   * If you are running your tests on a cluster and have a larger dataset you instead need to compute the difference
+   * between the RDDs directly without bringing the full data back to the driver. Most of your unit tests should be able
+   * to be done with just parallelize and collect; however, RDD equality, like general collection equality, has a few
+   * different possibilities. The two cases we will examine are order matters, and the order does not matter.
+   */
+
+  /**
+   * Compare two RDDs. If they are equal returns None, otherwise
+   * returns Some with the first mismatch. Assumes we have the same partitioner.
+   */
+  def compareRDDWithOrderSamePartitioner[T: ClassTag](expected: RDD[T], result: RDD[T]): Option[(Option[T], Option[T])] = {
+    // Handle mismatched lengths by converting into options and padding with Nones
+    expected.zipPartitions(result) {
+      (thisIter, otherIter) =>
+        new Iterator[(Option[T], Option[T])] {
+          def hasNext: Boolean = (thisIter.hasNext || otherIter.hasNext)
+          def next(): (Option[T], Option[T]) = {
+            (thisIter.hasNext, otherIter.hasNext) match {
+              case (false, true) => (Option.empty[T], Some(otherIter.next()))
+              case (true, false) => (Some(thisIter.next()), Option.empty[T])
+              case (true, true) => (Some(thisIter.next()), Some(otherIter.next()))
+              case _ => throw new Exception("next called when elements consumed")
+            }
+          }
+        }
+    }.filter { case (v1, v2) => v1 != v2 }.take(1).headOption
+  }
+
+  /**
+   * Compare two RDDs with order (e.g. [1,2,3] != [3,2,1])
+   * If the partitioners are not the same this requires multiple passes
+   * on the input.
+   * If they are equal returns None, otherwise returns Some with the first mismatch.
+   * If the lengths are not equal, one of the two components may be None.
+   */
+  def compareRDDWithOrder[T: ClassTag](expected: RDD[T], result: RDD[T]): Option[(Option[T], Option[T])] = {
+    // If there is a known partitioner just zip
+    if (result.partitioner.contains(expected.partitioner.get)) {
+      compareRDDWithOrderSamePartitioner(expected, result)
+    } else {
+      // Otherwise index every element
+      def indexRDD[T](rdd: RDD[T]): RDD[(Long, T)] = {
+        rdd.zipWithIndex.map { case (x, y) => (y, x) }
+      }
+      val indexedExpected = indexRDD(expected)
+      val indexedResult = indexRDD(result)
+      indexedExpected.cogroup(indexedResult).filter { case (_, (i1, i2)) =>
+        i1.isEmpty || i2.isEmpty || i1.head != i2.head
+      }.take(1).headOption.
+        map { case (_, (i1, i2)) =>
+          (i1.headOption, i2.headOption) }.take(1).headOption
+    }
+  }
+
+  /**
+   * Asserts two RDDs are equal (with the same order).
+   * If they are equal assertion succeeds, otherwise assertion fails.
+   */
+  def assertRDDEqualsWithOrder[T: ClassTag](expected: RDD[T], result: RDD[T]): Unit = {
+    assertTrue(compareRDDWithOrder(expected, result).isEmpty)
+  }
+
+
+
+  /**
+   * Asserts two RDDs are equal (unordered).
+   * If they are equal assertion succeeds, otherwise assertion fails.
+   */
+  def assertRDDEquals[T: ClassTag](expected: RDD[T], result: RDD[T]): Unit = {
+    assertTrue(compareRDD(expected, result).isEmpty)
+  }
+
+  /**
+   * Compare two RDDs where we do not require the order to be equal.
+   * If they are equal returns None, otherwise returns Some with the first mismatch.
+   *
+   * @return None if the two RDDs are equal, or Some containing
+   * the first mismatch information.
+   * The mismatch information will be Tuple3 of:
+   * (key, number of times this key occur in expected RDD,
+   * number of times this key occur in result RDD)
+   */
+  def compareRDD[T: ClassTag](expected: RDD[T], result: RDD[T]): Option[(T, Int, Int)] = {
+    // Key the values and count the number of each unique element
+    val expectedKeyed = expected.map(x => (x, 1)).reduceByKey(_ + _)
+    val resultKeyed = result.map(x => (x, 1)).reduceByKey(_ + _)
+    // Group them together and filter for difference
+    expectedKeyed.cogroup(resultKeyed).filter { case (_, (i1, i2)) =>
+      i1.isEmpty || i2.isEmpty || i1.head != i2.head
+    }
+      .take(1).headOption.
+      map { case (v, (i1, i2)) =>
+        (v, i1.headOption.getOrElse(0), i2.headOption.getOrElse(0)) }
+  }
+}
