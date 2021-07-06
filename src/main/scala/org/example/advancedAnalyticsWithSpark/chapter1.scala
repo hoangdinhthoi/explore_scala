@@ -1,4 +1,5 @@
 package org.example.advancedAnalyticsWithSpark
+import org.apache.spark.rdd.RDD
 import org.apache.spark.util.StatCounter
 
 
@@ -30,5 +31,27 @@ object chapter1 {
 
   object NAStatCounter extends Serializable {
     def apply(x: Double): NAStatCounter = new NAStatCounter().add(x)
+  }
+
+  def main(args: Array[String]): Unit = {
+    val nas1 = Array(1.0, Double.NaN).map(d => NAStatCounter(d))
+    val nas2 = Array(Double.NaN, 2.0).map(d => NAStatCounter(d))
+    val merged = nas1.zip(nas2).map{
+      case (a, b) => a.merge(b)
+    }.reduce(_.merge(_))
+    print(merged)
+  }
+
+  def statsWithMissing(rdd: RDD[Array[Double]]): Array[NAStatCounter] = {
+    val nastats = rdd.mapPartitions((iter: Iterator[Array[Double]]) => {
+      val nas: Array[NAStatCounter] = iter.next().map(d => NAStatCounter(d))
+      iter.foreach(arr => {
+        nas.zip(arr).foreach { case (n, d) => n.add(d) }
+      })
+      Iterator(nas)
+    })
+    nastats.reduce((n1, n2) => {
+      n1.zip(n2).map { case (a, b) => a.merge(b) }
+    })
   }
 }
