@@ -42,4 +42,11 @@ object chapter2 {
     Rating(userID, finalArtistID, count)
   }.cache()
   private val model = ALS.trainImplicit(trainData, 10, 5, 0.01, 1.0)
+  private val testUserID = 2093706
+  private val recommendations = model.recommendProducts(testUserID, 5)
+
+  def testFunc(rdd1: RDD[((Int, String), Double)], rdd2: RDD[((Int, String), String)]): RDD[((Int, String), (Double, String))] = {
+    rdd1.join(rdd2)
+  }
+
 }
