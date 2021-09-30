@@ -3,10 +3,9 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.recommendation._
 import org.apache.spark.{SparkConf, SparkContext}
 
+// Music recommendation system with collaborative filtering
 
 object chapter2 {
-  /* Music recommendation system with collaborative filtering
-   */
   private val conf = new SparkConf().setMaster("local[*]").setAppName("recommendationSystem")
   private val sc = new SparkContext(conf)
   //  Each line of the file contains a user ID, an artist ID, and a play count, separated
